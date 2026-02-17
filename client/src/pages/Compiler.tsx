@@ -2,177 +2,142 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Smartphone, Zap, Shield, Clock } from "lucide-react";
+import UploadZone from "@/components/UploadZone";
+import CompilationLogs from "@/components/CompilationLogs";
 import { toast } from "sonner";
 
 export default function Compiler() {
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [buildType, setBuildType] = useState<"debug" | "release">("release");
+  const [isUploading, setIsUploading] = useState(false);
+  const [currentBuildId, setCurrentBuildId] = useState<number | null>(null);
+  const [compilationComplete, setCompilationComplete] = useState(false);
+  const [apkDownloadUrl, setApkDownloadUrl] = useState<string | null>(null);
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setSelectedFile(file);
-      toast.success(`Arquivo selecionado: ${file.name}`);
+  const handleUploadStart = async (file: File, buildType: "debug" | "release") => {
+    setIsUploading(true);
+    setCompilationComplete(false);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("buildType", buildType);
+
+      const response = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Erro ao fazer upload");
+      }
+
+      const data = await response.json();
+      setCurrentBuildId(data.buildId);
+      toast.success(`Upload concluído! Iniciando compilação de ${data.projectName}...`);
+    } catch (error) {
+      console.error("Upload error:", error);
+      toast.error(error instanceof Error ? error.message : "Erro ao fazer upload");
+      setIsUploading(false);
     }
   };
 
-  const handleCompile = () => {
-    if (!selectedFile) {
-      toast.error("Selecione um arquivo primeiro");
-      return;
-    }
+  const handleCompilationComplete = (success: boolean, apkUrl?: string) => {
+    setIsUploading(false);
+    setCompilationComplete(true);
 
-    toast.info("Este é um site estático de demonstração. Para compilar APKs reais, você precisa de um servidor backend.");
+    if (success && apkUrl) {
+      setApkDownloadUrl(apkUrl);
+      toast.success("APK compilado com sucesso! Clique no botão para baixar.");
+    } else {
+      toast.error("Falha na compilação. Verifique os logs.");
+    }
   };
+
+  const handleNewCompilation = () => {
+    setCurrentBuildId(null);
+    setCompilationComplete(false);
+    setApkDownloadUrl(null);
+  };
+
+
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-6">
-      <div className="max-w-6xl mx-auto">
-        {/* Header */}
-        <div className="mb-12">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-12 h-12 bg-emerald-500 rounded-lg flex items-center justify-center">
-              <Smartphone className="w-6 h-6 text-white" />
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-slate-100 dark:from-slate-950 dark:via-blue-950/20 dark:to-slate-900">
+      {/* Header */}
+      <header className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50">
+        <div className="container mx-auto px-4 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-primary/10 rounded-lg">
+                <Smartphone className="w-6 h-6 text-primary" />
+              </div>
+              <div>
+                <h1 className="text-xl font-bold">Android APK Compiler</h1>
+                <p className="text-xs text-muted-foreground">Compilação automatizada de projetos Android</p>
+              </div>
             </div>
-            <h1 className="text-4xl font-bold text-white">Android APK Compiler</h1>
+            <div className="flex items-center gap-4">
+              <Button variant="outline" size="sm" asChild>
+                <a href="/history">Histórico</a>
+              </Button>
+            </div>
           </div>
-          <p className="text-slate-400 text-lg">Compilação automatizada de projetos Android</p>
         </div>
+      </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-          {/* Features */}
-          <Card className="bg-slate-800/50 border-slate-700 p-6">
-            <Zap className="w-8 h-8 text-emerald-500 mb-4" />
-            <h3 className="text-white font-semibold mb-2">Rápido</h3>
-            <p className="text-slate-400 text-sm">Compilação otimizada e eficiente</p>
-          </Card>
-
-          <Card className="bg-slate-800/50 border-slate-700 p-6">
-            <Shield className="w-8 h-8 text-emerald-500 mb-4" />
-            <h3 className="text-white font-semibold mb-2">Seguro</h3>
-            <p className="text-slate-400 text-sm">Seus arquivos são processados com segurança</p>
-          </Card>
-
-          <Card className="bg-slate-800/50 border-slate-700 p-6">
-            <Clock className="w-8 h-8 text-emerald-500 mb-4" />
-            <h3 className="text-white font-semibold mb-2">Histórico</h3>
-            <p className="text-slate-400 text-sm">Acesse builds anteriores facilmente</p>
-          </Card>
-        </div>
+      <main className="container mx-auto px-4 py-8">
+        {/* Features Banner */}
+        {!currentBuildId && (
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+            <Card className="p-4 text-center">
+              <Zap className="w-8 h-8 mx-auto mb-2 text-orange-500" />
+              <h3 className="font-semibold text-sm mb-1">Rápido</h3>
+              <p className="text-xs text-muted-foreground">Compilação otimizada</p>
+            </Card>
+            <Card className="p-4 text-center">
+              <Shield className="w-8 h-8 mx-auto mb-2 text-green-500" />
+              <h3 className="font-semibold text-sm mb-1">Seguro</h3>
+              <p className="text-xs text-muted-foreground">Ambiente isolado</p>
+            </Card>
+            <Card className="p-4 text-center">
+              <Clock className="w-8 h-8 mx-auto mb-2 text-blue-500" />
+              <h3 className="font-semibold text-sm mb-1">Histórico</h3>
+              <p className="text-xs text-muted-foreground">Acesse builds anteriores</p>
+            </Card>
+            <Card className="p-4 text-center">
+              <Smartphone className="w-8 h-8 mx-auto mb-2 text-purple-500" />
+              <h3 className="font-semibold text-sm mb-1">Debug & Release</h3>
+              <p className="text-xs text-muted-foreground">Ambos os modos</p>
+            </Card>
+          </div>
+        )}
 
         {/* Main Content */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Upload Section */}
-          <Card className="bg-slate-800/50 border-slate-700 p-8">
-            <h2 className="text-2xl font-bold text-white mb-6">Selecionar Projeto</h2>
-
+        <div className="max-w-4xl mx-auto">
+          {!currentBuildId ? (
+            <UploadZone onUploadStart={handleUploadStart} isUploading={isUploading} />
+          ) : (
             <div className="space-y-4">
-              {/* Build Type Selection */}
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-3">
-                  Tipo de Build
-                </label>
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      value="debug"
-                      checked={buildType === "debug"}
-                      onChange={(e) => setBuildType(e.target.value as "debug" | "release")}
-                      className="w-4 h-4"
-                    />
-                    <span className="text-slate-300">Debug (Teste)</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      value="release"
-                      checked={buildType === "release"}
-                      onChange={(e) => setBuildType(e.target.value as "debug" | "release")}
-                      className="w-4 h-4"
-                    />
-                    <span className="text-slate-300">Release (Produção)</span>
-                  </label>
+              <CompilationLogs buildId={currentBuildId} onComplete={handleCompilationComplete} />
+              
+              {compilationComplete && (
+                <div className="flex flex-col items-center gap-4 pt-4">
+                  {apkDownloadUrl && (
+                    <Button asChild size="lg" className="bg-green-600 hover:bg-green-700">
+                      <a href={apkDownloadUrl} download>
+                        📥 Baixar APK
+                      </a>
+                    </Button>
+                  )}
+                  <Button onClick={handleNewCompilation} size="lg" variant="outline">
+                    Nova Compilação
+                  </Button>
                 </div>
-              </div>
-
-              {/* File Input */}
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-3">
-                  Arquivo do Projeto
-                </label>
-                <div className="border-2 border-dashed border-slate-600 rounded-lg p-8 text-center hover:border-emerald-500 transition-colors">
-                  <input
-                    type="file"
-                    accept=".zip,.rar,.7z"
-                    onChange={handleFileSelect}
-                    className="hidden"
-                    id="file-input"
-                  />
-                  <label htmlFor="file-input" className="cursor-pointer block">
-                    <div className="text-4xl mb-3">📦</div>
-                    <p className="text-slate-300 font-medium">
-                      {selectedFile ? selectedFile.name : "Clique para selecionar arquivo"}
-                    </p>
-                    <p className="text-slate-500 text-sm mt-2">ZIP, RAR ou 7Z</p>
-                  </label>
-                </div>
-              </div>
-
-              {/* Compile Button */}
-              <Button
-                onClick={handleCompile}
-                className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-semibold py-6 text-lg rounded-lg"
-              >
-                Compilar APK
-              </Button>
-
-              <Button
-                variant="outline"
-                className="w-full text-slate-300 border-slate-600 hover:bg-slate-700"
-                onClick={() => {
-                  setSelectedFile(null);
-                  toast.info("Arquivo removido");
-                }}
-              >
-                Cancelar
-              </Button>
+              )}
             </div>
-          </Card>
-
-          {/* Info Section */}
-          <Card className="bg-slate-800/50 border-slate-700 p-8">
-            <h2 className="text-2xl font-bold text-white mb-6">Informações</h2>
-
-            <div className="space-y-4">
-              <div>
-                <h3 className="text-emerald-400 font-semibold mb-2">📋 Como usar:</h3>
-                <ol className="text-slate-300 space-y-2 list-decimal list-inside">
-                  <li>Selecione o tipo de build (Debug ou Release)</li>
-                  <li>Escolha seu arquivo de projeto (ZIP, RAR ou 7Z)</li>
-                  <li>Clique em "Compilar APK"</li>
-                  <li>Aguarde a compilação ser concluída</li>
-                  <li>Baixe seu APK compilado</li>
-                </ol>
-              </div>
-
-              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-700">
-                <h3 className="text-emerald-400 font-semibold mb-2">⚠️ Nota:</h3>
-                <p className="text-slate-300 text-sm">
-                  Este é um site estático de demonstração. Para usar a compilação real de APKs, você precisa de um servidor backend com as ferramentas Android SDK configuradas.
-                </p>
-              </div>
-
-              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-700">
-                <h3 className="text-emerald-400 font-semibold mb-2">💡 Dica:</h3>
-                <p className="text-slate-300 text-sm">
-                  Você pode integrar este frontend com um servidor backend (Node.js, Python, etc) para adicionar funcionalidade real de compilação.
-                </p>
-              </div>
-            </div>
-          </Card>
+          )}
         </div>
-      </div>
+      </main>
     </div>
   );
 }
