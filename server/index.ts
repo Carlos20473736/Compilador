@@ -7,7 +7,7 @@ import { registerOAuthRoutes } from "./_core/oauth";
 import { appRouter } from "./routers";
 import { createContext } from "./_core/context";
 import uploadRouter from "./uploadRouter";
-import { serveStatic } from "./_core/vite";
+import { serveStatic } from "./_core/vite-prod";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -53,9 +53,14 @@ async function startServer() {
   
   // development mode uses Vite, production mode uses static files
   if (process.env.NODE_ENV === "development") {
-    // Only import setupVite in development mode
-    const { setupVite } = await import("./_core/vite");
-    await setupVite(app, server);
+    try {
+      // Only import setupVite in development mode
+      const { setupVite } = await import("./_core/vite");
+      await setupVite(app, server);
+    } catch (error) {
+      console.warn("Vite setup failed, falling back to static files", error);
+      serveStatic(app);
+    }
   } else {
     serveStatic(app);
   }
