@@ -30,7 +30,16 @@ const sseClients = new Map<number, Response>();
 /**
  * Upload and compile Android project
  */
-router.post("/api/upload", upload.single("file"), async (req: Request, res: Response) => {
+router.post("/api/upload", (req: Request, res: Response, next) => {
+  upload.single("file")(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      return res.status(400).json({ error: `Erro de upload: ${err.message}` });
+    } else if (err) {
+      return res.status(400).json({ error: err.message });
+    }
+    next();
+  });
+}, async (req: Request, res: Response) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: "Nenhum arquivo enviado" });
