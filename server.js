@@ -10,15 +10,14 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const upload = multer({ dest: 'uploads/' });
 
-// Servir arquivos estáticos do build
-app.use(express.static(path.join(__dirname, 'dist/public')));
+// Middleware
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Armazenar builds em memória
 const builds = new Map();
 
-// API de upload
+// API de upload (DEVE SER ANTES DO FALLBACK)
 app.post('/api/upload', upload.single('file'), (req, res) => {
   try {
     if (!req.file) {
@@ -81,7 +80,7 @@ function simulateCompilation(buildId) {
   }, 1000);
 }
 
-// API de logs SSE
+// API de logs SSE (DEVE SER ANTES DO FALLBACK)
 app.get('/api/build/:buildId/logs', (req, res) => {
   const buildId = parseInt(req.params.buildId);
   const build = builds.get(buildId);
@@ -132,7 +131,10 @@ app.get('/api/build/:buildId/logs', (req, res) => {
   });
 });
 
-// Fallback para SPA
+// Servir arquivos estáticos do build (ANTES DO FALLBACK)
+app.use(express.static(path.join(__dirname, 'dist/public')));
+
+// Fallback para SPA (DEVE SER POR ÚLTIMO)
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist/public/index.html'));
 });
