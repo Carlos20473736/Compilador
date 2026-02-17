@@ -10,7 +10,7 @@ RUN npm install -g pnpm
 COPY package.json pnpm-lock.yaml ./
 COPY patches ./patches
 
-# Install dependencies
+# Install all dependencies (including devDependencies for build)
 RUN pnpm install --frozen-lockfile
 
 # Copy source code
@@ -24,15 +24,15 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-# Install pnpm
-RUN npm install -g pnpm
+# Install pnpm and node-gyp dependencies
+RUN npm install -g pnpm && apk add --no-cache python3 make g++
 
 # Copy package files and patches
 COPY package.json pnpm-lock.yaml ./
 COPY patches ./patches
 
 # Install production dependencies only
-RUN pnpm install --frozen-lockfile --prod
+RUN pnpm install --frozen-lockfile --prod && npm cache clean --force
 
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
