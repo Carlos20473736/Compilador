@@ -12,6 +12,11 @@ const upload = multer({ dest: 'uploads/' });
 
 // Servir arquivos estáticos do build
 app.use(express.static(path.join(__dirname, 'dist/public')));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Armazenar builds em memória
+const builds = new Map();
 
 // API de upload
 app.post('/api/upload', upload.single('file'), (req, res) => {
@@ -23,22 +28,26 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
     const buildType = req.body.buildType || 'release';
     const buildId = Date.now();
     
-    // Simular processamento de compilação
     const projectName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    
+    // Armazenar informações do build
+    builds.set(buildId, {
+      projectName,
+      buildType,
+      status: 'iniciado',
+      logs: [],
+      apkUrl: null
+    });
     
     res.json({
       buildId,
       projectName,
       buildType,
-      status: 'iniciado',
-      message: `Compilação iniciada para ${projectName}`
+      status: 'iniciado'
     });
 
     // Simular compilação em background
-    setTimeout(() => {
-      // Aqui você poderia adicionar lógica real de compilação
-      console.log(`Compilação ${buildId} concluída`);
-    }, 3000);
+    simulateCompilation(buildId);
 
   } catch (error) {
     console.error('Erro no upload:', error);
@@ -46,13 +55,11 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
   }
 });
 
-// API de logs SSE
-app.get('/api/logs/:buildId', (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
+// Função para simular compilação
+function simulateCompilation(buildId) {
+  const build = builds.get(buildId);
+  if (!build) return;
 
-  // Enviar logs simulados
   const logs = [
     'Iniciando compilação...',
     'Configurando ambiente Android...',
@@ -61,17 +68,68 @@ app.get('/api/logs/:buildId', (req, res) => {
     'Compilação concluída com sucesso!'
   ];
 
-  let index = 0;
+  let logIndex = 0;
   const interval = setInterval(() => {
-    if (index < logs.length) {
-      res.write(`data: ${JSON.stringify({ message: logs[index], type: 'log' })}\n\n`);
-      index++;
+    if (logIndex < logs.length) {
+      build.logs.push(logs[logIndex]);
+      logIndex++;
     } else {
-      res.write(`data: ${JSON.stringify({ message: 'Compilação finalizada', type: 'complete', apkUrl: '/apk/sample.apk' })}\n\n`);
+      build.status = 'concluído';
+      build.apkUrl = `/apk/sample-${buildId}.apk`;
+      clearInterval(interval);
+    }
+  }, 1000);
+}
+
+// API de logs SSE
+app.get('/api/build/:buildId/logs', (req, res) => {
+  const buildId = parseInt(req.params.buildId);
+  const build = builds.get(buildId);
+
+  if (!build) {
+    res.status(404).json({ error: 'Build não encontrado' });
+    return;
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  // Enviar status conectado
+  res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
+
+  // Enviar logs já existentes
+  build.logs.forEach(log => {
+    res.write(`data: ${JSON.stringify({ type: 'log', message: log })}\n\n`);
+  });
+
+  // Monitorar novos logs
+  let lastLogCount = build.logs.length;
+  const interval = setInterval(() => {
+    // Enviar novos logs
+    while (lastLogCount < build.logs.length) {
+      const log = build.logs[lastLogCount];
+      res.write(`data: ${JSON.stringify({ type: 'log', message: log })}\n\n`);
+      lastLogCount++;
+    }
+
+    // Se compilação terminou
+    if (build.status === 'concluído') {
+      res.write(`data: ${JSON.stringify({ 
+        type: 'complete', 
+        success: true, 
+        apkUrl: build.apkUrl 
+      })}\n\n`);
       clearInterval(interval);
       res.end();
     }
-  }, 1000);
+  }, 500);
+
+  // Limpar intervalo quando cliente desconectar
+  req.on('close', () => {
+    clearInterval(interval);
+  });
 });
 
 // Fallback para SPA
