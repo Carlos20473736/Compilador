@@ -3,9 +3,10 @@ import multer from "multer";
 import * as path from "path";
 import * as fs from "fs";
 import { nanoid } from "nanoid";
-import { validateAndroidProject, extractZip, compileAndroidProject, cleanupTempFiles } from "./androidCompiler";
+import { validateAndroidProject } from "./androidCompiler";
 import { createBuild, updateBuild } from "./buildDb";
-import { sdk } from "./_core/sdk";
+import { triggerGitHubBuild, getGitHubRunStatus, downloadGitHubArtifact } from "./triggerBuild";
+import { storagePut } from "./storage";
 
 const router = express.Router();
 
@@ -26,9 +27,10 @@ const upload = multer({
 
 // SSE connections map
 const sseClients = new Map<number, Response>();
+const buildStatus = new Map<number, { status: string; logs: string[] }>();
 
 /**
- * Upload and compile Android project
+ * Upload and compile Android project via GitHub Actions
  */
 router.post("/api/upload", upload.single("file"), async (req: Request, res: Response) => {
   try {
@@ -39,14 +41,14 @@ router.post("/api/upload", upload.single("file"), async (req: Request, res: Resp
     const buildType = (req.body.buildType as "debug" | "release") || "debug";
     const zipPath = req.file.path;
 
-    // Validate project
+    // Validate project structure
     const validation = await validateAndroidProject(zipPath);
     if (!validation.isValid) {
       fs.unlinkSync(zipPath);
       return res.status(400).json({ error: validation.errorMessage });
     }
 
-    // Create build record (using userId = 1 for public access)
+    // Create build record
     const build = await createBuild({
       userId: 1,
       projectName: validation.projectName || "android-project",
@@ -55,8 +57,14 @@ router.post("/api/upload", upload.single("file"), async (req: Request, res: Resp
       zipFileKey: zipPath,
     });
 
-    // Start compilation in background
-    compileInBackground(build.id, zipPath, buildType, validation.projectName || "android-project");
+    // Initialize build status tracking
+    buildStatus.set(build.id, {
+      status: "validating",
+      logs: ["📦 Validando projeto Android..."]
+    });
+
+    // Start GitHub Actions build in background
+    triggerGitHubBuildInBackground(build.id, zipPath, buildType, validation.projectName || "android-project");
 
     res.json({
       success: true,
@@ -86,12 +94,21 @@ router.get("/api/build/:buildId/logs", async (req: Request, res: Response) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
+  res.setHeader("Access-Control-Allow-Origin", "*");
 
   // Store client connection
   sseClients.set(buildId, res);
 
   // Send initial connection message
   res.write(`data: ${JSON.stringify({ type: "connected" })}\n\n`);
+
+  // Send existing logs
+  const status = buildStatus.get(buildId);
+  if (status) {
+    status.logs.forEach(log => {
+      res.write(`data: ${JSON.stringify({ type: "log", message: log })}\n\n`);
+    });
+  }
 
   // Clean up on disconnect
   req.on("close", () => {
@@ -100,84 +117,57 @@ router.get("/api/build/:buildId/logs", async (req: Request, res: Response) => {
 });
 
 /**
- * Background compilation process
+ * Background process to trigger GitHub Actions and monitor build
  */
-async function compileInBackground(
+async function triggerGitHubBuildInBackground(
   buildId: number,
   zipPath: string,
   buildType: "debug" | "release",
   projectName: string
 ) {
-  const tempDir = path.join("/tmp", `build-${buildId}-${nanoid()}`);
-  
-  try {
-    // Send log to SSE client
-    const sendLog = (log: string) => {
-      const client = sseClients.get(buildId);
-      if (client) {
-        client.write(`data: ${JSON.stringify({ type: "log", message: log })}\n\n`);
-      }
-    };
-
-    sendLog("📦 Extraindo projeto...");
-    await updateBuild(buildId, { status: "validating" });
-
-    // Extract ZIP
-    fs.mkdirSync(tempDir, { recursive: true });
-    await extractZip(zipPath, tempDir);
+  const sendLog = (log: string) => {
+    const client = sseClients.get(buildId);
+    if (client) {
+      client.write(`data: ${JSON.stringify({ type: "log", message: log })}\n\n`);
+    }
     
-    sendLog("✅ Projeto extraído com sucesso");
-    sendLog("🔨 Iniciando compilação...");
+    // Store log
+    const status = buildStatus.get(buildId);
+    if (status) {
+      status.logs.push(log);
+    }
+  };
+
+  try {
+    // Upload ZIP to temporary storage
+    sendLog("📤 Fazendo upload do projeto...");
+    const zipBuffer = fs.readFileSync(zipPath);
+    const zipKey = `builds/${buildId}/project.zip`;
+    const { url: projectZipUrl } = await storagePut(zipKey, zipBuffer, "application/zip");
+    sendLog(`✅ Projeto enviado: ${projectZipUrl}`);
+
+    // Trigger GitHub Actions
+    sendLog("🚀 Disparando compilação no GitHub Actions...");
     await updateBuild(buildId, { status: "compiling" });
 
-    // Compile project
-    const result = await compileAndroidProject(tempDir, buildType, sendLog);
-
-    if (result.success) {
-      await updateBuild(buildId, {
-        status: "success",
-        apkUrl: result.apkUrl,
-        apkFileKey: result.apkFileKey,
-        logs: result.logs,
-        completedAt: new Date(),
-      });
-
-      const client = sseClients.get(buildId);
-      if (client) {
-        client.write(`data: ${JSON.stringify({ 
-          type: "complete", 
-          success: true,
-          apkUrl: result.apkUrl 
-        })}\n\n`);
-        client.end();
-      }
-      sseClients.delete(buildId);
-    } else {
-      await updateBuild(buildId, {
-        status: "failed",
-        logs: result.logs,
-        errorMessage: result.errorMessage,
-        completedAt: new Date(),
-      });
-
-      const client = sseClients.get(buildId);
-      if (client) {
-        client.write(`data: ${JSON.stringify({ 
-          type: "complete", 
-          success: false,
-          error: result.errorMessage 
-        })}\n\n`);
-        client.end();
-      }
-      sseClients.delete(buildId);
+    const triggerResult = await triggerGitHubBuild(buildId, projectZipUrl, buildType);
+    if (!triggerResult.success) {
+      throw new Error(triggerResult.error || "Falha ao disparar GitHub Actions");
     }
 
+    sendLog(`✅ Build disparado no GitHub Actions`);
+    sendLog(`🔗 Run ID: ${triggerResult.runId}`);
+
+    // Monitor build status
+    await monitorGitHubBuild(buildId, triggerResult.runId!, sendLog);
+
   } catch (error) {
-    console.error("Compilation error:", error);
-    
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    sendLog(`❌ Erro: ${errorMsg}`);
+
     await updateBuild(buildId, {
       status: "failed",
-      errorMessage: error instanceof Error ? error.message : String(error),
+      errorMessage: errorMsg,
       completedAt: new Date(),
     });
 
@@ -186,7 +176,7 @@ async function compileInBackground(
       client.write(`data: ${JSON.stringify({ 
         type: "complete", 
         success: false,
-        error: error instanceof Error ? error.message : String(error)
+        error: errorMsg 
       })}\n\n`);
       client.end();
     }
@@ -194,11 +184,119 @@ async function compileInBackground(
 
   } finally {
     // Cleanup
-    await cleanupTempFiles(tempDir);
     if (fs.existsSync(zipPath)) {
       fs.unlinkSync(zipPath);
     }
   }
+}
+
+/**
+ * Monitor GitHub Actions build status
+ */
+async function monitorGitHubBuild(
+  buildId: number,
+  runId: string,
+  sendLog: (log: string) => void
+) {
+  let attempts = 0;
+  const maxAttempts = 180; // 30 minutos com polling a cada 10 segundos
+
+  while (attempts < maxAttempts) {
+    try {
+      const status = await getGitHubRunStatus(runId);
+
+      if (status.status === "completed") {
+        if (status.conclusion === "success") {
+          sendLog("✅ Compilação concluída com sucesso no GitHub!");
+          
+          // Download APK from artifacts
+          sendLog("📥 Baixando APK...");
+          const artifactResult = await downloadGitHubArtifact(runId, buildId);
+          
+          if (artifactResult.success) {
+            sendLog(`✅ APK encontrado`);
+            
+            // For now, store the download URL
+            // In a real scenario, you'd download and re-upload to your storage
+            await updateBuild(buildId, {
+              status: "success",
+              apkUrl: artifactResult.downloadUrl,
+              apkFileKey: `builds/${buildId}/app.apk`,
+              completedAt: new Date(),
+            });
+
+            sendLog(`🔗 APK pronto para download`);
+            
+            const client = sseClients.get(buildId);
+            if (client) {
+              client.write(`data: ${JSON.stringify({ 
+                type: "complete", 
+                success: true,
+                apkUrl: artifactResult.downloadUrl
+              })}\n\n`);
+              client.end();
+            }
+            sseClients.delete(buildId);
+          } else {
+            throw new Error(artifactResult.error || "Falha ao baixar APK");
+          }
+          return;
+
+        } else if (status.conclusion === "failure") {
+          sendLog("❌ Compilação falhou no GitHub Actions");
+          sendLog(`🔗 Verifique os logs: ${status.html_url}`);
+          
+          await updateBuild(buildId, {
+            status: "failed",
+            errorMessage: "GitHub Actions build failed",
+            completedAt: new Date(),
+          });
+
+          const client = sseClients.get(buildId);
+          if (client) {
+            client.write(`data: ${JSON.stringify({ 
+              type: "complete", 
+              success: false,
+              error: "Build failed"
+            })}\n\n`);
+            client.end();
+          }
+          sseClients.delete(buildId);
+          return;
+        }
+      }
+
+      sendLog(`⏳ Aguardando compilação... (${status.status})`);
+      
+      // Wait 10 seconds before checking again
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      attempts++;
+
+    } catch (error) {
+      sendLog(`⚠️ Erro ao verificar status: ${error instanceof Error ? error.message : String(error)}`);
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      attempts++;
+    }
+  }
+
+  // Timeout
+  sendLog("❌ Timeout: compilação levou muito tempo");
+  await updateBuild(buildId, {
+    status: "failed",
+    errorMessage: "Build timeout",
+    completedAt: new Date(),
+  });
+
+  const client = sseClients.get(buildId);
+  if (client) {
+    client.write(`data: ${JSON.stringify({ 
+      type: "complete", 
+      success: false,
+      error: "Build timeout"
+    })}\n\n`);
+    client.end();
+  }
+  sseClients.delete(buildId);
 }
 
 export default router;
