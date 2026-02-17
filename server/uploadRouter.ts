@@ -92,6 +92,7 @@ router.get("/api/build/:buildId/logs", async (req: Request, res: Response) => {
 
   // Send initial connection message
   res.write(`data: ${JSON.stringify({ type: "connected" })}\n\n`);
+  res.flush?.();
 
   // Clean up on disconnect
   req.on("close", () => {
@@ -112,10 +113,15 @@ async function compileInBackground(
   
   try {
     // Send log to SSE client
-    const sendLog = (log: string) => {
-      const client = sseClients.get(buildId);
-      if (client) {
-        client.write(`data: ${JSON.stringify({ type: "log", message: log })}\n\n`);
+      const sendLog = (log: string) => {
+      const client = sseClients.get(buildId) as any;
+      if (client && client.write) {
+        try {
+          client.write(`data: ${JSON.stringify({ type: "log", message: log })}\n\n`);
+          client.flush?.();
+        } catch (e) {
+          console.error("Error writing log:", e);
+        }
       }
     };
 
@@ -142,14 +148,19 @@ async function compileInBackground(
         completedAt: new Date(),
       });
 
-      const client = sseClients.get(buildId);
-      if (client) {
-        client.write(`data: ${JSON.stringify({ 
-          type: "complete", 
-          success: true,
-          apkUrl: result.apkUrl 
-        })}\n\n`);
-        client.end();
+      const client = sseClients.get(buildId) as any;
+      if (client && client.write) {
+        try {
+          client.write(`data: ${JSON.stringify({ 
+            type: "complete", 
+            success: true,
+            apkUrl: result.apkUrl 
+          })}\n\n`);
+          client.flush?.();
+          client.end();
+        } catch (e) {
+          console.error("Error writing completion:", e);
+        }
       }
       sseClients.delete(buildId);
     } else {
@@ -160,14 +171,19 @@ async function compileInBackground(
         completedAt: new Date(),
       });
 
-      const client = sseClients.get(buildId);
-      if (client) {
-        client.write(`data: ${JSON.stringify({ 
-          type: "complete", 
-          success: false,
-          error: result.errorMessage 
-        })}\n\n`);
-        client.end();
+      const client = sseClients.get(buildId) as any;
+      if (client && client.write) {
+        try {
+          client.write(`data: ${JSON.stringify({ 
+            type: "complete", 
+            success: false,
+            error: result.errorMessage 
+          })}\n\n`);
+          client.flush?.();
+          client.end();
+        } catch (e) {
+          console.error("Error writing error:", e);
+        }
       }
       sseClients.delete(buildId);
     }
@@ -181,14 +197,19 @@ async function compileInBackground(
       completedAt: new Date(),
     });
 
-    const client = sseClients.get(buildId);
-    if (client) {
-      client.write(`data: ${JSON.stringify({ 
-        type: "complete", 
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      })}\n\n`);
-      client.end();
+    const client = sseClients.get(buildId) as any;
+    if (client && client.write) {
+      try {
+        client.write(`data: ${JSON.stringify({ 
+          type: "complete", 
+          success: false,
+          error: error instanceof Error ? error.message : String(error)
+        })}\n\n`);
+        client.flush?.();
+        client.end();
+      } catch (e) {
+        console.error("Error writing catch error:", e);
+      }
     }
     sseClients.delete(buildId);
 

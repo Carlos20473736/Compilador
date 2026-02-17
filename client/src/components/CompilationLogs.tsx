@@ -21,6 +21,10 @@ export default function CompilationLogs({ buildId, onComplete }: CompilationLogs
 
     eventSource.onmessage = (event) => {
       try {
+        if (!event.data || event.data.trim() === "") {
+          return;
+        }
+        
         const data = JSON.parse(event.data);
 
         if (data.type === "connected") {
