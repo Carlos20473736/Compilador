@@ -5,7 +5,7 @@
     "buildCommand": "pnpm install && pnpm run build"
   },
   "deploy": {
-    "startCommand": "npx serve -s dist/public -l $PORT",
+    "startCommand": "node server.js",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5
   }
