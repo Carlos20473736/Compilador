@@ -1,0 +1,143 @@
+name: Android Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: 'Build ID from the web app'
+        required: true
+      project_url:
+        description: 'URL of the Android project ZIP'
+        required: true
+      build_type:
+        description: 'Build type (debug or release)'
+        required: true
+        default: 'debug'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-levels: 33,34
+          build-tools: 34.0.0
+
+      - name: Download project ZIP
+        run: |
+          mkdir -p /tmp/android-project
+          cd /tmp/android-project
+          curl -L -o project.zip "${{ github.event.inputs.project_url }}"
+          unzip -q project.zip
+          ls -la
+
+      - name: Find project root
+        id: find_root
+        run: |
+          cd /tmp/android-project
+          # Se há apenas um diretório, entra nele
+          if [ $(ls -d */ 2>/dev/null | wc -l) -eq 1 ]; then
+            dir=$(ls -d */ | head -1)
+            cd "$dir"
+          fi
+          echo "project_root=$(pwd)" >> $GITHUB_OUTPUT
+          ls -la
+
+      - name: Validate Android project
+        run: |
+          cd ${{ steps.find_root.outputs.project_root }}
+          if [ ! -f "build.gradle" ] && [ ! -f "build.gradle.kts" ]; then
+            echo "❌ build.gradle não encontrado"
+            exit 1
+          fi
+          if [ ! -f "gradlew" ]; then
+            echo "❌ gradlew não encontrado"
+            exit 1
+          fi
+          echo "✅ Projeto Android válido"
+
+      - name: Make gradlew executable
+        run: |
+          cd ${{ steps.find_root.outputs.project_root }}
+          chmod +x gradlew
+
+      - name: Create local.properties
+        run: |
+          cd ${{ steps.find_root.outputs.project_root }}
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          cat local.properties
+
+      - name: Download dependencies
+        run: |
+          cd ${{ steps.find_root.outputs.project_root }}
+          ./gradlew dependencies --no-daemon --console=plain || true
+
+      - name: Build APK (Debug)
+        if: github.event.inputs.build_type == 'debug'
+        run: |
+          cd ${{ steps.find_root.outputs.project_root }}
+          ./gradlew assembleDebug --no-daemon --console=plain
+
+      - name: Build APK (Release)
+        if: github.event.inputs.build_type == 'release'
+        run: |
+          cd ${{ steps.find_root.outputs.project_root }}
+          ./gradlew assembleRelease --no-daemon --console=plain
+
+      - name: Find APK
+        id: find_apk
+        run: |
+          cd ${{ steps.find_root.outputs.project_root }}
+          if [ "${{ github.event.inputs.build_type }}" == "debug" ]; then
+            APK_PATH=$(find . -name "*.apk" -path "*/debug/*" | head -1)
+          else
+            APK_PATH=$(find . -name "*.apk" -path "*/release/*" | head -1)
+          fi
+          
+          if [ -z "$APK_PATH" ]; then
+            echo "❌ APK não encontrado"
+            exit 1
+          fi
+          
+          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+          echo "apk_size=$(du -h "$APK_PATH" | cut -f1)" >> $GITHUB_OUTPUT
+          echo "✅ APK encontrado: $APK_PATH"
+
+      - name: Upload APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk-${{ github.event.inputs.build_id }}
+          path: ${{ steps.find_root.outputs.project_root }}/${{ steps.find_apk.outputs.apk_path }}
+          retention-days: 7
+
+      - name: Generate download URL
+        id: artifact_url
+        run: |
+          echo "artifact_url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> $GITHUB_OUTPUT
+
+      - name: Notify build completion
+        if: always()
+        run: |
+          BUILD_ID="${{ github.event.inputs.build_id }}"
+          BUILD_STATUS="${{ job.status }}"
+          APK_SIZE="${{ steps.find_apk.outputs.apk_size }}"
+          
+          if [ "$BUILD_STATUS" == "success" ]; then
+            echo "✅ Build $BUILD_ID concluído com sucesso!"
+            echo "📦 Tamanho do APK: $APK_SIZE"
+          else
+            echo "❌ Build $BUILD_ID falhou"
+          fi
