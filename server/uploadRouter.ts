@@ -4,7 +4,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { nanoid } from "nanoid";
 import { validateAndroidProject, extractZip, compileAndroidProject, cleanupTempFiles } from "./androidCompiler";
-import { createBuild, updateBuild } from "./buildDb";
+import { createBuild, updateBuild } from "./buildDb-memory";
 import { sdk } from "./_core/sdk";
 
 const router = express.Router();
